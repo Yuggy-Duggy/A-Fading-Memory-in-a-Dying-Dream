@@ -117,25 +117,16 @@ html,body{width:100%;height:100%;background:var(--void);overflow:hidden;
   opacity:0;transition:opacity 1s ease 1s;}
 .gwarn.s{opacity:1;}
 
-/* Final */
-#fin{position:fixed;inset:0;z-index:200;background:var(--void);
-  display:flex;flex-direction:column;align-items:center;justify-content:center;
-  padding:4rem 3rem;opacity:0;pointer-events:none;transition:opacity 4s ease;}
-#fin.v{opacity:1;}
-.ft{font-size:clamp(.95rem,2.2vw,1.4rem);font-weight:300;font-style:italic;
-  color:var(--cream);text-align:center;line-height:2.5;max-width:500px;
-  opacity:0;transition:opacity 3s ease;white-space:pre-line;}
-.ft.s{opacity:.7;}
-.fs{font-family:'Lato',sans-serif;font-weight:100;font-size:.5rem;letter-spacing:.5em;
-  color:var(--dust);text-transform:uppercase;margin-top:2.5rem;
-  opacity:0;transition:opacity 2s ease 2s;}
-.fs.s{opacity:.42;}
-#fin-btn{margin-top:3rem;padding:.7rem 2rem;border:1px solid rgba(200,169,110,.12);
+/* Harry / Credits overlay — canvas handles drawing, this just hosts the restart btn */
+#fin{position:fixed;inset:0;z-index:200;pointer-events:none;background:transparent;}
+#fin-canvas{position:fixed;inset:0;z-index:201;pointer-events:none;display:none;}
+#fin-btn{position:fixed;bottom:2.5rem;left:50%;transform:translateX(-50%);
+  z-index:202;padding:.7rem 2.2rem;border:1px solid rgba(200,169,110,.15);
   background:transparent;color:var(--dust);font-family:'Lato',sans-serif;font-weight:100;
   font-size:.56rem;letter-spacing:.55em;text-transform:uppercase;cursor:none;
-  opacity:0;transition:opacity 1s ease 6s,color .3s;pointer-events:all;}
+  opacity:0;transition:opacity 1.5s ease,color .3s;pointer-events:none;}
 #fin-btn:hover{color:var(--ash);}
-#fin-btn.s{opacity:.32;}
+#fin-btn.s{opacity:.35;pointer-events:all;}
 </style>
 </head>
 <body>
@@ -168,8 +159,7 @@ html,body{width:100%;height:100%;background:var(--void);overflow:hidden;
 </div>
 
 <div id="fin">
-  <div class="ft" id="fin-t"></div>
-  <div class="fs" id="fin-s"></div>
+  <canvas id="fin-canvas"></canvas>
   <button id="fin-btn" onclick="location.reload()">Return to the Beginning</button>
 </div>
 
@@ -396,6 +386,10 @@ function initScene() {
         speed:  (0.4 + Math.random() * 0.5) * (Math.random() < 0.5 ? 1 : -1),
         phase:  Math.random() * Math.PI * 2 + side * Math.PI,
         glowing: 0, spin: 0,
+        spinAngle: 0,   // accumulated rotation (radians)
+        spinVel:   0,   // angular velocity — imparted on click
+        spinDir:   1,   // last click direction (±1)
+        clickCount: 0,  // how many times clicked total
         alive: true,
         id: p * 2 + side,
       });
@@ -549,7 +543,14 @@ function drawDancers(s) {
     // Update orbital waltz motion
     d.phase += 0.007 * STAGES[sIdx].tempo * (1 + s.noise * 0.4);
     d.glowing = Math.max(0, d.glowing - 0.018);
-    d.spin    = Math.max(0, d.spin    - 0.012);
+
+    // Physics-based spin — angular velocity with friction
+    // Friction is lighter in early stages (cleaner spin), heavier in late stages (stumbling)
+    const friction = 0.96 - s.cs * 0.04; // 0.96 Stage I → 0.92 Stage VI
+    d.spinVel *= friction;
+    d.spinAngle += d.spinVel;
+    // Clamp accumulated angle drift to avoid floating point runaway
+    if (Math.abs(d.spinAngle) > Math.PI * 200) d.spinAngle = d.spinAngle % (Math.PI * 2);
 
     // Compute world position
     const ox = d.orbitR * W * Math.cos(d.phase + d.side * Math.PI);
@@ -576,9 +577,9 @@ function drawDancers(s) {
 
     ctx.save();
     ctx.translate(px, py);
-    // Spin on interaction, sway normally
-    const sway = Math.sin(gt * 0.85 + d.phase) * 0.04 + d.spin * 0.6;
-    ctx.rotate(sway);
+    // Natural waltz sway PLUS spin impulse angle
+    const sway = Math.sin(gt * 0.85 + d.phase) * 0.04;
+    ctx.rotate(sway + d.spinAngle);
 
     const sh = BASE_H; // silhouette height ref
 
@@ -857,22 +858,54 @@ function handleClick(ex, ey) {
       case 'partial': {
         const d = hitDancer(ex, ey);
         if (d) {
-          d.glowing = 1.0; d.spin = 2.2;
-          spawnRipple(ex, ey, 100, 0.75);
-          playChord(ROOT * 2, [0, 4, 7, 12], 0.065, 2.0);
-          if (sIdx === 1 && Math.random() < 0.35)
-            setTimeout(() => { d.glowing = 0; d.spin = 0; }, 700 + Math.random() * 500);
+          d.clickCount++;
+          d.glowing = 1.0;
+
+          // Determine spin direction — alternates each click for a "caught and reversed" feel
+          // Stage II: occasionally reverses unexpectedly
+          let dir = d.clickCount % 2 === 0 ? 1 : -1;
+          if (sIdx === 1 && Math.random() < 0.3) dir *= -1;
+
+          // Impart angular velocity — Stage I: full clean spin, later stages weaker/chaotic
+          const baseVel = (0.18 + Math.random() * 0.08) * dir;
+          d.spinVel += baseVel * (1 - s.cs * 0.5);
+          d.spinDir = dir;
+
+          // Two concentric ripple rings for a ballroom twirl feel
+          spawnRipple(ex, ey, 70,  0.55);
+          spawnRipple(ex, ey, 130, 0.95);
+
+          // Stage-specific audio
+          if (sIdx === 0) {
+            // Clean warm waltz chord
+            playChord(ROOT * 2, [0, 4, 7, 12], 0.068, 2.2);
+          } else if (sIdx === 1) {
+            // Same chord but occasionally a wrong note sneaks in
+            const semis = Math.random() < 0.25 ? [0, 3, 7, 11] : [0, 4, 7, 12];
+            playChord(ROOT * 2, semis, 0.062, 2.0);
+            if (Math.random() < 0.22) setTimeout(() => playNoiseBurst(0.08, 0.018), 600);
+          }
+
+          // Stage II: spin sometimes stutters — velocity briefly reversed after 400ms
+          if (sIdx === 1 && Math.random() < 0.35) {
+            setTimeout(() => { d.spinVel *= -0.4; }, 400 + Math.random() * 300);
+          }
         } else {
-          spawnRipple(ex, ey, 60, 0.55);
+          // Miss — ambient floor tap
+          spawnRipple(ex, ey, 55, 0.55);
           const semi = PENT[Math.floor(Math.random() * PENT.length)];
-          playTone(semiHz(semi, ROOT * 2, s.pitch), 0.055, 1.3, 'sine', s.det * 0.3);
+          playTone(semiHz(semi, ROOT * 2, s.pitch), 0.05, 1.3, 'sine', s.det * 0.3);
           if (sIdx === 1 && Math.random() < 0.22) playNoiseBurst(0.1, 0.022);
         }
         break;
       }
       case 'catch': {
         const d2 = hitDancer(ex, ey);
-        if (d2) { d2.glowing = 0.55; d2.spin = 0.8; }
+        if (d2) {
+          d2.glowing = 0.55;
+          // Stumble — wrong direction, weak
+          d2.spinVel += (Math.random() < 0.5 ? 1 : -1) * (0.06 + Math.random() * 0.05);
+        }
         spawnRipple(ex, ey, 45, 0.45);
         const wrongSemi = MOTIF[Math.floor(Math.random() * MOTIF.length)] - 3;
         playTone(semiHz(wrongSemi, ROOT, s.pitch), 0.038, 0.9, 'triangle', 140);
@@ -1231,18 +1264,530 @@ function loop(ts) {
 }
 
 // ═══════════════════════════════════════════════════════
-// FINAL
+// HARRY SEQUENCE + CREDITS
 // ═══════════════════════════════════════════════════════
 function showFinal() {
-  if (AC) masterGain.gain.linearRampToValueAtTime(0, AC.currentTime + 5);
-  const fin = document.getElementById('fin');
-  fin.classList.add('v'); fin.style.pointerEvents = 'all';
-  document.getElementById('fin-t').textContent =
-    'The music has stopped.\nThe ballroom is empty.\n\nYou are standing in a room\nyou have always known.\n\nYou cannot remember\nhow you came to be here.\n\nYou cannot remember\nwho you were\nbefore the music.';
-  document.getElementById('fin-s').textContent = 'in memory of all those who found themselves here';
-  setTimeout(() => document.getElementById('fin-t').classList.add('s'), 1000);
-  setTimeout(() => document.getElementById('fin-s').classList.add('s'), 3200);
-  setTimeout(() => document.getElementById('fin-btn').classList.add('s'), 6500);
+  // Silence music slowly
+  if (AC) masterGain.gain.linearRampToValueAtTime(0, AC.currentTime + 8);
+
+  // Setup fin canvas
+  const fc = document.getElementById('fin-canvas');
+  fc.width  = W; fc.height = H;
+  fc.style.display = 'block';
+  const fx = fc.getContext('2d');
+
+  // Phase timing (ms from sequence start)
+  // 0–3000   : static only, face barely perceptible
+  // 3000–7000: face emerges through static, gains definition
+  // 7000–10000: "I" appears letter by letter
+  // 10000–13500: "am" appears
+  // 13500–17000: "Harry" appears, lingers
+  // 17000–26000: slow deformation — face warps, melts, stretches
+  // 26000–30000: face dissolves back into static, static thins
+  // 30000–35000: black void, credits roll
+  // 35000+     : restart button appears
+
+  const SEQ_START = performance.now();
+
+  // ── FACE DRAWING ENGINE ──────────────────────────────
+  // Harry: a dignified older man, painted entirely with canvas primitives
+  // cx, cy = face centre, scale = radius of head
+  function drawHarryFace(fx, cx, cy, scale, deform, alpha) {
+    fx.save();
+    fx.globalAlpha = Math.max(0, Math.min(1, alpha));
+
+    const d = deform; // 0 = normal, 1 = fully deformed
+
+    // ── Noise warp function — displaces points as d increases
+    function wp(x, y, mag) {
+      const m = mag * d;
+      return [
+        x + Math.sin(y * 0.018 + gt * 1.1) * m + Math.cos(x * 0.022 + gt * 0.7) * m * 0.6,
+        y + Math.cos(x * 0.015 + gt * 0.9) * m + Math.sin(y * 0.019 + gt * 1.3) * m * 0.7,
+      ];
+    }
+
+    // Colour shifts from warm flesh → sickly grey-green as deform increases
+    function flesh(baseR, baseG, baseB, a) {
+      const r = (baseR - d * 55) | 0;
+      const g = (baseG - d * 30) | 0;
+      const b = (baseB + d * 40) | 0;
+      return `rgba(${Math.max(0,r)},${Math.max(0,g)},${Math.max(0,b)},${a})`;
+    }
+
+    // ── HEAD SHAPE ────────────────────────────────────
+    const headW = scale * (1 + d * 0.35);
+    const headH = scale * 1.28 * (1 + d * 0.2);
+    const [hcx, hcy] = wp(cx, cy, scale * 0.25);
+
+    const headGrad = fx.createRadialGradient(hcx - scale*0.15, hcy - scale*0.25, 0, hcx, hcy, headW * 1.1);
+    headGrad.addColorStop(0, flesh(195, 158, 118, 0.95));
+    headGrad.addColorStop(0.6, flesh(170, 130, 90, 0.9));
+    headGrad.addColorStop(1, flesh(110, 80, 55, 0.6));
+
+    fx.beginPath();
+    // Distort head outline with warp
+    const pts = 32;
+    for (let i = 0; i <= pts; i++) {
+      const a = (i / pts) * Math.PI * 2;
+      const rx2 = headW * (1 + d * Math.sin(a * 3 + gt * 0.8) * 0.18);
+      const ry2 = headH * (1 + d * Math.cos(a * 2 + gt * 0.6) * 0.14);
+      const [px, py] = wp(hcx + Math.cos(a) * rx2, hcy + Math.sin(a) * ry2, scale * 0.08);
+      i === 0 ? fx.moveTo(px, py) : fx.lineTo(px, py);
+    }
+    fx.closePath();
+    fx.fillStyle = headGrad;
+    fx.fill();
+
+    // ── SHADOW / DEPTH ────────────────────────────────
+    const shadowG = fx.createRadialGradient(hcx + scale*0.3, hcy + scale*0.35, 0, hcx, hcy, headW * 1.3);
+    shadowG.addColorStop(0, 'rgba(0,0,0,0)');
+    shadowG.addColorStop(0.7, `rgba(0,0,0,${0.22 + d * 0.3})`);
+    shadowG.addColorStop(1, `rgba(0,0,0,${0.55 + d * 0.3})`);
+    fx.beginPath();
+    for (let i = 0; i <= pts; i++) {
+      const a = (i / pts) * Math.PI * 2;
+      const rx2 = headW * 1.05, ry2 = headH * 1.05;
+      const [px, py] = wp(hcx + Math.cos(a) * rx2, hcy + Math.sin(a) * ry2, scale * 0.05);
+      i === 0 ? fx.moveTo(px, py) : fx.lineTo(px, py);
+    }
+    fx.closePath();
+    fx.fillStyle = shadowG; fx.fill();
+
+    // ── NECK ──────────────────────────────────────────
+    const [nl, nr, nb] = [
+      wp(hcx - scale*0.18, hcy + headH*0.88, scale * 0.12),
+      wp(hcx + scale*0.18, hcy + headH*0.88, scale * 0.12),
+      wp(hcx, hcy + headH*1.25 + d*scale*0.3, scale * 0.15),
+    ];
+    fx.beginPath();
+    fx.moveTo(...nl); fx.lineTo(...nr); fx.lineTo(...nb); fx.closePath();
+    fx.fillStyle = flesh(170, 128, 88, 0.85); fx.fill();
+
+    // ── EYES ──────────────────────────────────────────
+    const eyeY = hcy - scale * (0.12 - d * 0.08);
+    const eyeSep = scale * (0.32 + d * 0.15);
+    const eyeScaleY = 1 + d * 0.7; // eyes stretch vertically when deforming
+
+    [[-1, 0], [1, 0]].forEach(([side]) => {
+      const [ex, ey] = wp(hcx + side * eyeSep, eyeY, scale * 0.18);
+      const ew = scale * 0.21, eh = scale * 0.1 * eyeScaleY;
+
+      // White
+      fx.save();
+      fx.beginPath();
+      fx.ellipse(ex, ey, ew, eh, d * side * 0.4, 0, Math.PI*2);
+      fx.fillStyle = flesh(230, 225, 218, 0.92); fx.fill();
+
+      // Iris
+      const [irx, iry] = wp(ex, ey, scale * 0.04);
+      fx.beginPath();
+      fx.ellipse(irx, iry, ew * 0.52, eh * 0.85, 0, 0, Math.PI*2);
+      fx.fillStyle = flesh(60, 45, 28, 0.95); fx.fill();
+
+      // Pupil
+      fx.beginPath();
+      fx.ellipse(irx, iry, ew * 0.26, eh * 0.55, 0, 0, Math.PI*2);
+      fx.fillStyle = `rgba(5,3,2,0.98)`; fx.fill();
+
+      // Eyelid crease
+      fx.beginPath();
+      fx.ellipse(ex, ey - eh*0.5, ew, eh * (0.5 + d*0.5), d * side * 0.3, Math.PI, Math.PI*2);
+      fx.strokeStyle = flesh(130, 95, 65, 0.7);
+      fx.lineWidth = scale * 0.025; fx.stroke();
+
+      // Ageing wrinkles (corner)
+      for (let w = 0; w < 3; w++) {
+        const [wx, wy] = wp(ex + side*(ew + scale*0.03), ey + scale*0.02 + w*scale*0.05, scale*0.06*d);
+        fx.beginPath();
+        fx.moveTo(ex + side*ew, ey + w*scale*0.04);
+        fx.lineTo(wx + side*scale*(0.06+w*0.04), wy);
+        fx.strokeStyle = flesh(130, 95, 65, 0.25 + d*0.1);
+        fx.lineWidth = scale * 0.015; fx.stroke();
+      }
+      fx.restore();
+    });
+
+    // ── BROW RIDGE ────────────────────────────────────
+    [[-1], [1]].forEach(([side]) => {
+      const bx = hcx + side * eyeSep;
+      const by = eyeY - scale * (0.16 + d * 0.04);
+      fx.beginPath();
+      fx.moveTo(...wp(bx - side*scale*0.22, by, scale*0.1));
+      fx.bezierCurveTo(
+        ...wp(bx, by - scale*(0.06+d*0.04), scale*0.1),
+        ...wp(bx + side*scale*0.16, by, scale*0.1),
+        ...wp(bx + side*scale*0.25, by + scale*0.04, scale*0.1)
+      );
+      fx.strokeStyle = flesh(85, 62, 40, 0.7 + d*0.2);
+      fx.lineWidth = scale * (0.04 + d*0.03); fx.stroke();
+
+      // Grey brow hairs
+      for (let h = 0; h < 8; h++) {
+        const hx = bx + (h/7 - 0.5) * scale * 0.42 * side;
+        const [hbx, hby] = wp(hx, by - scale*0.02, scale*0.05);
+        fx.beginPath();
+        fx.moveTo(hbx, hby);
+        fx.lineTo(hbx + side*scale*(0.03+d*0.06), hby - scale*(0.04+d*0.05));
+        fx.strokeStyle = flesh(130, 115, 100, 0.55);
+        fx.lineWidth = scale*0.018; fx.stroke();
+      }
+    });
+
+    // ── NOSE ──────────────────────────────────────────
+    const noseTopY = eyeY + scale * 0.08;
+    const noseBotY = hcy + scale * (0.22 + d * 0.18);
+    const [ntx, nty] = wp(hcx, noseTopY, scale * 0.12);
+    const [nbx, nby] = wp(hcx, noseBotY, scale * 0.18);
+
+    fx.beginPath();
+    fx.moveTo(ntx, nty);
+    fx.bezierCurveTo(
+      ...wp(hcx - scale*0.06, noseTopY + scale*0.12, scale*0.1),
+      ...wp(hcx - scale*0.07, noseBotY - scale*0.05, scale*0.12),
+      ...wp(hcx - scale*(0.14+d*0.08), noseBotY, scale*0.14)
+    );
+    fx.moveTo(ntx, nty);
+    fx.bezierCurveTo(
+      ...wp(hcx + scale*0.06, noseTopY + scale*0.12, scale*0.1),
+      ...wp(hcx + scale*0.07, noseBotY - scale*0.05, scale*0.12),
+      ...wp(hcx + scale*(0.14+d*0.08), noseBotY, scale*0.14)
+    );
+    fx.strokeStyle = flesh(120, 85, 58, 0.65 + d*0.2);
+    fx.lineWidth = scale * (0.028 + d*0.02); fx.stroke();
+
+    // Nostril shadows
+    [[-1],[1]].forEach(([side]) => {
+      const [nx, ny] = wp(hcx + side*scale*(0.1+d*0.06), noseBotY - scale*0.02, scale*0.08);
+      fx.beginPath();
+      fx.ellipse(nx, ny, scale*(0.06+d*0.04), scale*(0.04+d*0.03), side*0.3, 0, Math.PI*2);
+      fx.fillStyle = flesh(60, 40, 25, 0.65); fx.fill();
+    });
+
+    // ── MOUTH ─────────────────────────────────────────
+    const mouthY = hcy + scale * (0.42 + d * 0.2);
+    const mouthW = scale * (0.3 + d * 0.22);
+    // Deform mouth — one side droops more
+    const [mlx, mly] = wp(hcx - mouthW, mouthY + d * scale * 0.12, scale * 0.14);
+    const [mrx, mry] = wp(hcx + mouthW, mouthY - d * scale * 0.06, scale * 0.14);
+    const [mcx2, mcy2] = wp(hcx, mouthY + scale*(0.04 + d*0.08), scale*0.1);
+
+    fx.beginPath();
+    fx.moveTo(mlx, mly);
+    fx.bezierCurveTo(
+      ...wp(hcx - mouthW*0.4, mouthY + scale*(0.01+d*0.05), scale*0.08),
+      ...wp(hcx + mouthW*0.4, mouthY + scale*(0.01-d*0.05), scale*0.08),
+      mrx, mry
+    );
+    fx.strokeStyle = flesh(100, 68, 48, 0.85);
+    fx.lineWidth = scale * (0.03 + d*0.025); fx.stroke();
+
+    // Lower lip
+    fx.beginPath();
+    fx.moveTo(mlx, mly);
+    fx.bezierCurveTo(...wp(hcx-mouthW*0.3, mouthY+scale*(0.08+d*0.15), scale*0.12),
+      ...wp(hcx+mouthW*0.3, mouthY+scale*(0.06+d*0.1), scale*0.12), mrx, mry);
+    fx.fillStyle = flesh(155, 110, 80, 0.45); fx.fill();
+
+    // Mouth shadow / opening (deform makes it gape)
+    if (d > 0.15) {
+      fx.beginPath();
+      fx.moveTo(mlx, mly);
+      fx.bezierCurveTo(
+        ...wp(hcx-mouthW*0.5, mouthY+scale*(0.04+d*0.18), scale*0.12),
+        ...wp(hcx+mouthW*0.5, mouthY+scale*(0.03+d*0.12), scale*0.12),
+        mrx, mry
+      );
+      fx.closePath();
+      fx.fillStyle = `rgba(15,8,4,${d*0.7})`; fx.fill();
+    }
+
+    // Lip crease lines
+    for (let l = 0; l < 3; l++) {
+      const [lx2, ly2] = wp(hcx + (l-1)*mouthW*0.5, mouthY - scale*(0.04+d*0.08), scale*0.06);
+      fx.beginPath();
+      fx.moveTo(lx2, ly2);
+      fx.lineTo(...wp(lx2 + (l-1)*scale*0.04, mouthY - scale*(0.12+d*0.12), scale*0.05));
+      fx.strokeStyle = flesh(120, 85, 60, 0.3);
+      fx.lineWidth = scale*0.015; fx.stroke();
+    }
+
+    // ── EAR ───────────────────────────────────────────
+    [[-1],[1]].forEach(([side]) => {
+      const earX = hcx + side * headW * (1.0 + d * 0.12);
+      const earY = hcy - scale * 0.08;
+      const [eax, eay] = wp(earX, earY, scale * 0.15);
+      fx.beginPath();
+      fx.ellipse(eax, eay, scale*(0.08+d*0.05), scale*(0.16+d*0.06), side*0.15, 0, Math.PI*2);
+      fx.fillStyle = flesh(175, 132, 92, 0.85); fx.fill();
+      fx.strokeStyle = flesh(130, 90, 60, 0.5);
+      fx.lineWidth = scale*0.02; fx.stroke();
+    });
+
+    // ── FOREHEAD LINES ────────────────────────────────
+    for (let l = 0; l < 4; l++) {
+      const ly2 = hcy - scale*(0.45 - l*0.1) + d*scale*Math.sin(l+gt*0.5)*0.15;
+      fx.beginPath();
+      const [lsx, lsy] = wp(hcx - scale*(0.32-l*0.04), ly2, scale*(0.06+d*0.12));
+      const [lex, ley] = wp(hcx + scale*(0.32-l*0.04), ly2, scale*(0.06+d*0.12));
+      fx.moveTo(lsx, lsy); fx.lineTo(lex, ley);
+      fx.strokeStyle = flesh(130, 95, 65, 0.18 + d*0.12);
+      fx.lineWidth = scale*(0.014+l*0.006); fx.stroke();
+    }
+
+    // ── AGEING JOWLS (strengthen with deform) ─────────
+    [[-1],[1]].forEach(([side]) => {
+      const jx = hcx + side*scale*(0.28+d*0.18);
+      const jy = hcy + scale*(0.5 + d*0.25);
+      const [jx2, jy2] = wp(jx, jy, scale*0.18);
+      const jg = fx.createRadialGradient(jx2, jy2, 0, jx2, jy2, scale*0.25);
+      jg.addColorStop(0, flesh(145, 108, 74, 0.35 + d*0.25));
+      jg.addColorStop(1, 'rgba(0,0,0,0)');
+      fx.beginPath();
+      fx.ellipse(jx2, jy2, scale*(0.18+d*0.12), scale*(0.12+d*0.1), side*0.3, 0, Math.PI*2);
+      fx.fillStyle = jg; fx.fill();
+    });
+
+    // ── HAIR ──────────────────────────────────────────
+    const hairY = hcy - headH * (0.82 + d * 0.15);
+    const hairG = fx.createLinearGradient(hcx, hairY, hcx, hcy - headH*0.4);
+    hairG.addColorStop(0, flesh(65, 58, 52, 0.95));
+    hairG.addColorStop(0.5, flesh(80, 72, 65, 0.9));
+    hairG.addColorStop(1, 'rgba(0,0,0,0)');
+
+    fx.beginPath();
+    const hairPts = 20;
+    for (let i = 0; i <= hairPts; i++) {
+      const a = (i / hairPts - 0.5) * Math.PI;
+      const hr = headW * (1.05 + d * 0.1 * Math.sin(a * 2.5 + gt));
+      const [hpx, hpy] = wp(hcx + Math.cos(a)*hr, hcy - headH*0.65 + Math.sin(a)*headH*0.45, scale*0.1);
+      i === 0 ? fx.moveTo(hpx, hpy) : fx.lineTo(hpx, hpy);
+    }
+    fx.lineTo(...wp(hcx + headW, hcy - headH*0.2, scale*0.08));
+    fx.lineTo(...wp(hcx - headW, hcy - headH*0.2, scale*0.08));
+    fx.closePath();
+    fx.fillStyle = hairG; fx.fill();
+
+    fx.restore();
+  }
+
+  // ── STATIC FIELD ────────────────────────────────────
+  function drawFinalStatic(fx, amount) {
+    if (amount < 0.01) return;
+    const id = fx.createImageData(W, H);
+    const d2 = id.data;
+    const step = Math.max(1, (4 - amount * 3) | 0);
+    for (let i = 0; i < d2.length; i += 4 * step) {
+      if (Math.random() < amount) {
+        const v = (Math.random() * 220) | 0;
+        d2[i] = d2[i+1] = d2[i+2] = v;
+        d2[i+3] = (Math.random() * 180 * amount) | 0;
+      }
+    }
+    fx.putImageData(id, 0, 0);
+  }
+
+  // ── CREDITS DATA ─────────────────────────────────────
+  const CREDITS = [
+    { text: 'Everywhere at the End of Time', size: 'large', style: 'title' },
+    { text: '', size: 'gap' },
+    { text: 'Inspired by', size: 'label' },
+    { text: 'The Caretaker', size: 'name' },
+    { text: 'Leyland James Kirby', size: 'sub' },
+    { text: '', size: 'gap' },
+    { text: 'Visual Experience', size: 'label' },
+    { text: 'Claude Sonnet', size: 'name' },
+    { text: 'Anthropic', size: 'sub' },
+    { text: '', size: 'gap' },
+    { text: 'Original Album Art', size: 'label' },
+    { text: 'Ivan Seal', size: 'name' },
+    { text: '', size: 'gap' },
+    { text: 'Dementia affects an estimated', size: 'label' },
+    { text: '57 million people worldwide', size: 'name' },
+    { text: '', size: 'gap' },
+    { text: 'in memory of all those', size: 'small' },
+    { text: 'who found themselves here', size: 'small' },
+    { text: '', size: 'gap' },
+    { text: '', size: 'gap' },
+    { text: '— Harry —', size: 'name' },
+  ];
+
+  // ── MAIN SEQUENCE LOOP ───────────────────────────────
+  let finRunning = true;
+  let creditScroll = null;
+
+  function finLoop() {
+    if (!finRunning) return;
+    requestAnimationFrame(finLoop);
+
+    const elapsed = performance.now() - SEQ_START;
+    const cx2 = W / 2, cy2 = H / 2;
+    const scale = Math.min(W, H) * 0.22;
+
+    // Clear
+    fx.fillStyle = 'rgb(5,4,3)';
+    fx.fillRect(0, 0, W, H);
+
+    // ── PHASE 1: 0–3000ms — dense static, face hint ────
+    if (elapsed < 3000) {
+      const p = elapsed / 3000;
+      drawFinalStatic(fx, 0.85 - p * 0.2);
+      drawHarryFace(fx, cx2, cy2, scale, 0, p * 0.08);
+
+    // ── PHASE 2: 3000–7000ms — face emerges ────────────
+    } else if (elapsed < 7000) {
+      const p = (elapsed - 3000) / 4000;
+      drawFinalStatic(fx, 0.65 - p * 0.45);
+      drawHarryFace(fx, cx2, cy2, scale, 0, 0.08 + p * 0.82);
+
+    // ── PHASE 3: 7000–17000ms — text appears ───────────
+    } else if (elapsed < 17000) {
+      const p = (elapsed - 7000) / 10000;
+      drawFinalStatic(fx, 0.18 - p * 0.12);
+      drawHarryFace(fx, cx2, cy2, scale, 0, 0.90 + p * 0.06);
+
+      // "I am Harry" builds letter by letter
+      const FULL = 'I am Harry.';
+      const charTime = 10000 / FULL.length;
+      const charsVisible = Math.min(FULL.length, ((elapsed - 7000) / charTime) | 0);
+      const text = FULL.slice(0, charsVisible);
+
+      fx.save();
+      fx.font = `300 italic ${scale * 0.22}px 'Cormorant Garamond', Georgia, serif`;
+      fx.textAlign = 'center';
+      fx.textBaseline = 'middle';
+      // Text sits just below face
+      const textY = cy2 + scale * 1.55;
+      // Subtle glow behind text
+      fx.shadowColor = 'rgba(200,169,110,0.5)';
+      fx.shadowBlur = scale * 0.3;
+      fx.fillStyle = `rgba(240,232,216,${0.55 + p * 0.3})`;
+      fx.fillText(text, cx2, textY);
+      // Blinking cursor at end
+      if (charsVisible < FULL.length && Math.floor(elapsed / 500) % 2 === 0) {
+        fx.fillStyle = `rgba(200,169,110,0.6)`;
+        fx.fillText('|', cx2 + fx.measureText(text).width / 2 + scale * 0.05, textY);
+      }
+      fx.restore();
+
+    // ── PHASE 4: 17000–27000ms — deformation ───────────
+    } else if (elapsed < 27000) {
+      const p = (elapsed - 17000) / 10000;
+      const deform = p * p; // ease in — slow start, accelerating
+
+      drawFinalStatic(fx, 0.06 + p * 0.35);
+      drawHarryFace(fx, cx2, cy2, scale, deform, 1.0 - p * 0.15);
+
+      // "I am Harry." text — starts corrupting
+      const textY = cy2 + scale * 1.55;
+      const FULL = 'I am Harry.';
+      const corrupted = FULL.split('').map(c => {
+        if (c === ' ' || c === '.') return c;
+        return Math.random() < p * 0.7 ? 'abcdefghijklmnopqrstuvwxyz'[(Math.random()*26)|0] : c;
+      }).join('');
+      fx.save();
+      fx.font = `300 italic ${scale * 0.22}px 'Cormorant Garamond', Georgia, serif`;
+      fx.textAlign = 'center'; fx.textBaseline = 'middle';
+      fx.shadowColor = 'rgba(200,169,110,0.3)'; fx.shadowBlur = scale * 0.2;
+      fx.fillStyle = `rgba(240,232,216,${0.85 - p * 0.75})`;
+      fx.fillText(corrupted, cx2, textY);
+      fx.restore();
+
+    // ── PHASE 5: 27000–32000ms — dissolution ───────────
+    } else if (elapsed < 32000) {
+      const p = (elapsed - 27000) / 5000;
+      drawFinalStatic(fx, 0.4 + p * 0.55);
+      drawHarryFace(fx, cx2, cy2, scale, 1.0, (1 - p) * 0.85);
+
+    // ── PHASE 6: 32000+ — black, then credits ──────────
+    } else {
+      const p = Math.min(1, (elapsed - 32000) / 2000);
+      // Fade to pure black
+      fx.fillStyle = `rgba(5,4,3,${p})`;
+      fx.fillRect(0, 0, W, H);
+
+      if (p >= 1 && !creditScroll) startCredits(fx);
+    }
+  }
+
+  // ── CREDITS SEQUENCE ────────────────────────────────
+  function startCredits(fx) {
+    finRunning = false; // stop the face loop
+    fc.style.display = 'none'; // hide the fin canvas
+    // Run credits on the main canvas
+    runCredits();
+  }
+
+  function runCredits() {
+    const startT = performance.now();
+    const LINE_H = Math.min(W, H) * 0.072;
+    const totalH = CREDITS.reduce((acc, c) => acc + (c.size === 'gap' ? LINE_H * 0.8 : LINE_H * 1.2), 0);
+    const scrollDur = totalH / (Math.min(W, H) * 0.00008); // speed
+
+    function creditsLoop(ts) {
+      const el2 = ts - startT;
+      const scrollY = el2 * (Math.min(W, H) * 0.00009);
+
+      // Background
+      ctx.fillStyle = 'rgb(5,4,3)';
+      ctx.fillRect(0, 0, W, H);
+
+      // Subtle grain
+      if (grainBuf) { ctx.globalAlpha = 0.18; ctx.drawImage(grainBuf, 0, 0); ctx.globalAlpha = 1; }
+
+      // Draw credit lines
+      let yOff = H + 80 - scrollY;
+      CREDITS.forEach(line => {
+        if (line.size === 'gap') { yOff += LINE_H * 0.8; return; }
+
+        const sizes = { large: LINE_H * 0.9, name: LINE_H * 0.55, label: LINE_H * 0.32, sub: LINE_H * 0.28, small: LINE_H * 0.30, title: LINE_H * 0.85 };
+        const sz = sizes[line.size] || LINE_H * 0.4;
+        const isTitle = line.style === 'title';
+
+        if (yOff > -LINE_H * 2 && yOff < H + LINE_H * 2) {
+          ctx.save();
+          ctx.font = `${isTitle ? '300' : '100'} ${isTitle ? 'italic' : 'normal'} ${sz}px '${isTitle ? 'Cormorant Garamond' : 'Lato'}', ${isTitle ? 'Georgia' : 'sans-serif'}`;
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+          const distFromCentre = Math.abs(yOff - H / 2) / (H / 2);
+          const fadedAlpha = Math.max(0, 1 - distFromCentre * 1.4);
+
+          if (isTitle || line.size === 'name') {
+            ctx.shadowColor = 'rgba(200,169,110,0.2)'; ctx.shadowBlur = sz * 0.5;
+            ctx.fillStyle = `rgba(240,232,216,${fadedAlpha * 0.75})`;
+          } else if (line.size === 'label') {
+            ctx.fillStyle = `rgba(200,169,110,${fadedAlpha * 0.5})`;
+            ctx.font = `100 normal ${sz}px 'Lato', sans-serif`;
+            // letter spacing via char-by-char
+          } else {
+            ctx.fillStyle = `rgba(130,115,100,${fadedAlpha * 0.55})`;
+          }
+          ctx.fillText(line.text, W / 2, yOff);
+          ctx.restore();
+        }
+        yOff += LINE_H * 1.2;
+      });
+
+      // Vignette
+      const vg = ctx.createRadialGradient(W/2, H/2, H*0.2, W/2, H/2, H*0.75);
+      vg.addColorStop(0, 'rgba(0,0,0,0)');
+      vg.addColorStop(1, 'rgba(0,0,0,0.7)');
+      ctx.fillStyle = vg; ctx.fillRect(0,0,W,H);
+
+      const allGone = yOff < -LINE_H * 2;
+      if (!allGone) {
+        requestAnimationFrame(creditsLoop);
+      } else {
+        // Show restart
+        setTimeout(() => document.getElementById('fin-btn').classList.add('s'), 800);
+      }
+    }
+    requestAnimationFrame(creditsLoop);
+    refreshGrain(0.15);
+  }
+
+  // Kick off
+  requestAnimationFrame(finLoop);
 }
 
 // ═══════════════════════════════════════════════════════
